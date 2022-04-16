@@ -1032,6 +1032,8 @@ BlockHeader.prototype.getDifficulty = function getDifficulty() {
  */
 BlockHeader.prototype._getHash = function hash() {
   var buf = this.toBuffer();
+  if (this.version < 7)
+    return Hash.scrypt(buf);
   return Hash.sha256sha256(buf);
 };
 
@@ -1928,6 +1930,7 @@ module.exports = ECDSA;
 var crypto = require('crypto');
 var BufferUtil = require('../util/buffer');
 var $ = require('../util/preconditions');
+var scrypt = require('scryptsy');
 
 var Hash = module.exports;
 
@@ -1965,7 +1968,13 @@ Hash.sha512 = function(buf) {
   return crypto.createHash('sha512').update(buf).digest();
 };
 
+Hash.scrypt = function(buf) {
+  $.checkArgument(BufferUtil.isBuffer(buf));
+  return scrypt(buf, buf, 1024, 1, 1, 32);
+};
+
 Hash.sha512.blocksize = 1024;
+Hash.scrypt.blocksize = 1024;
 
 Hash.hmac = function(hashf, data, key) {
   //http://en.wikipedia.org/wiki/Hash-based_message_authentication_code
@@ -4683,20 +4692,18 @@ function removeNetwork(network) {
 addNetwork({
   name: 'livenet',
   alias: 'mainnet',
-  pubkeyhash: 0x00,
-  privatekey: 0x80,
-  scripthash: 0x05,
-  xpubkey: 0x0488b21e,
-  xprivkey: 0x0488ade4,
-  networkMagic: 0xf9beb4d9,
-  port: 8333,
+  pubkeyhash: 0x19,
+  privatekey: 0x99,
+  scripthash: 0x55,
+  xpubkey: 0x02cfbede,
+  xprivkey: 0x02cfbf60,
+  networkMagic: 0x70352205,
+  port: 15714,
   dnsSeeds: [
-    'seed.bitcoin.sipa.be',
-    'dnsseed.bluematt.me',
-    'dnsseed.bitcoin.dashjr.org',
-    'seed.bitcoinstats.com',
-    'seed.bitnodes.io',
-    'bitseed.xf2.org'
+    'rat4.blackcoin.co',
+    'seed.blackcoin.co',
+    '6.syllabear.us.to',
+    'bcseed.syllabear.us.to'
   ]
 });
 
@@ -8458,9 +8465,8 @@ module.exports.Output = require('./output');
 module.exports.UnspentOutput = require('./unspentoutput');
 module.exports.Signature = require('./signature');
 module.exports.Sighash = require('./sighash');
-module.exports.SighashWitness = require('./sighashwitness');
 
-},{"./input":29,"./output":35,"./sighash":36,"./sighashwitness":37,"./signature":38,"./transaction":39,"./unspentoutput":40}],29:[function(require,module,exports){
+},{"./input":29,"./output":35,"./sighash":36,"./signature":38,"./transaction":39,"./unspentoutput":40}],29:[function(require,module,exports){
 module.exports = require('./input');
 
 module.exports.PublicKey = require('./publickey');
@@ -8917,7 +8923,6 @@ var $ = require('../../util/preconditions');
 var Script = require('../../script');
 var Signature = require('../../crypto/signature');
 var Sighash = require('../sighash');
-var SighashWitness = require('../sighashwitness');
 var BufferWriter = require('../../encoding/bufferwriter');
 var BufferUtil = require('../../util/buffer');
 var TransactionSignature = require('../signature');
@@ -8998,13 +9003,7 @@ MultiSigScriptHashInput.prototype.getScriptCode = function() {
 MultiSigScriptHashInput.prototype.getSighash = function(transaction, privateKey, index, sigtype) {
   var self = this;
   var hash;
-  if (self.nestedWitness) {
-    var scriptCode = self.getScriptCode();
-    var satoshisBuffer = self.getSatoshisBuffer();
-    hash = SighashWitness.sighash(transaction, sigtype, index, scriptCode, satoshisBuffer);
-  } else  {
-    hash = Sighash.sighash(transaction, sigtype, index, self.redeemScript);
-  }
+  hash = Sighash.sighash(transaction, sigtype, index, self.redeemScript);
   return hash;
 };
 
@@ -9017,13 +9016,7 @@ MultiSigScriptHashInput.prototype.getSignatures = function(transaction, privateK
   _.each(this.publicKeys, function(publicKey) {
     if (publicKey.toString() === privateKey.publicKey.toString()) {
       var signature;
-      if (self.nestedWitness) {
-        var scriptCode = self.getScriptCode();
-        var satoshisBuffer = self.getSatoshisBuffer();
-        signature = SighashWitness.sign(transaction, privateKey, sigtype, index, scriptCode, satoshisBuffer);
-      } else  {
-        signature = Sighash.sign(transaction, privateKey, sigtype, index, self.redeemScript);
-      }
+      signature = Sighash.sign(transaction, privateKey, sigtype, index, self.redeemScript);
       results.push(new TransactionSignature({
         publicKey: privateKey.publicKey,
         prevTxId: self.prevTxId,
@@ -9109,29 +9102,15 @@ MultiSigScriptHashInput.prototype.publicKeysWithoutSignature = function() {
 };
 
 MultiSigScriptHashInput.prototype.isValidSignature = function(transaction, signature) {
-  if (this.nestedWitness) {
-    signature.signature.nhashtype = signature.sigtype;
-    var scriptCode = this.getScriptCode();
-    var satoshisBuffer = this.getSatoshisBuffer();
-    return SighashWitness.verify(
-      transaction,
-      signature.signature,
-      signature.publicKey,
-      signature.inputIndex,
-      scriptCode,
-      satoshisBuffer
-    );
-  } else {
-    // FIXME: Refactor signature so this is not necessary
-    signature.signature.nhashtype = signature.sigtype;
-    return Sighash.verify(
-      transaction,
-      signature.signature,
-      signature.publicKey,
-      signature.inputIndex,
-      this.redeemScript
-    );
-  }
+  // FIXME: Refactor signature so this is not necessary
+  signature.signature.nhashtype = signature.sigtype;
+  return Sighash.verify(
+    transaction,
+    signature.signature,
+    signature.publicKey,
+    signature.inputIndex,
+    this.redeemScript
+  );
 };
 
 MultiSigScriptHashInput.OPCODES_SIZE = 7; // serialized size (<=3) + 0 .. N .. M OP_CHECKMULTISIG
@@ -9147,7 +9126,7 @@ MultiSigScriptHashInput.prototype._estimateSize = function() {
 module.exports = MultiSigScriptHashInput;
 
 }).call(this,require("buffer").Buffer)
-},{"../../crypto/signature":11,"../../encoding/bufferwriter":15,"../../script":25,"../../util/buffer":43,"../../util/preconditions":45,"../output":35,"../sighash":36,"../sighashwitness":37,"../signature":38,"./input":30,"buffer":99,"inherits":152,"lodash":155}],33:[function(require,module,exports){
+},{"../../crypto/signature":11,"../../encoding/bufferwriter":15,"../../script":25,"../../util/buffer":43,"../../util/preconditions":45,"../output":35,"../sighash":36,"../signature":38,"./input":30,"buffer":99,"inherits":152,"lodash":155}],33:[function(require,module,exports){
 'use strict';
 
 var inherits = require('inherits');
@@ -9908,7 +9887,6 @@ var BufferWriter = require('../encoding/bufferwriter');
 var Hash = require('../crypto/hash');
 var Signature = require('../crypto/signature');
 var Sighash = require('./sighash');
-var SighashWitness = require('./sighashwitness');
 
 var Address = require('../address');
 var UnspentOutput = require('./unspentoutput');
@@ -10203,13 +10181,7 @@ Transaction.prototype.hasWitnesses = function() {
 
 Transaction.prototype.toBufferWriter = function(writer, noWitness) {
   writer.writeInt32LE(this.version);
-
-  var hasWitnesses = this.hasWitnesses();
-
-  if (hasWitnesses && !noWitness) {
-    writer.write(new Buffer('0001', 'hex'));
-  }
-
+  writer.writeUInt32LE(this.nTime);
   writer.writeVarintNum(this.inputs.length);
 
   _.each(this.inputs, function(input) {
@@ -10220,17 +10192,6 @@ Transaction.prototype.toBufferWriter = function(writer, noWitness) {
   _.each(this.outputs, function(output) {
     output.toBufferWriter(writer);
   });
-
-  if (hasWitnesses && !noWitness) {
-    _.each(this.inputs, function(input) {
-      var witnesses = input.getWitnesses();
-      writer.writeVarintNum(witnesses.length);
-      for (var j = 0; j < witnesses.length; j++) {
-        writer.writeVarintNum(witnesses[j].length);
-        writer.write(witnesses[j]);
-      }
-    });
-  }
 
   writer.writeUInt32LE(this.nLockTime);
   return writer;
@@ -10245,15 +10206,8 @@ Transaction.prototype.fromBufferReader = function(reader) {
   $.checkArgument(!reader.finished(), 'No transaction data received');
 
   this.version = reader.readInt32LE();
+  this.nTime = reader.readUInt32LE();
   var sizeTxIns = reader.readVarintNum();
-
-  // check for segwit
-  var hasWitnesses = false;
-  if (sizeTxIns === 0 && reader.buf[reader.pos] !== 0) {
-    reader.pos += 1;
-    hasWitnesses = true;
-    sizeTxIns = reader.readVarintNum();
-  }
 
   for (var i = 0; i < sizeTxIns; i++) {
     var input = Input.fromBufferReader(reader);
@@ -10263,19 +10217,6 @@ Transaction.prototype.fromBufferReader = function(reader) {
   var sizeTxOuts = reader.readVarintNum();
   for (var j = 0; j < sizeTxOuts; j++) {
     this.outputs.push(Output.fromBufferReader(reader));
-  }
-
-  if (hasWitnesses) {
-    for (var k = 0; k < sizeTxIns; k++) {
-      var itemCount = reader.readVarintNum();
-      var witnesses = [];
-      for (var l = 0; l < itemCount; l++) {
-        var size = reader.readVarintNum();
-        var item = reader.read(size);
-        witnesses.push(item);
-      }
-      this.inputs[k].setWitnesses(witnesses);
-    }
   }
 
   this.nLockTime = reader.readUInt32LE();
@@ -10295,6 +10236,7 @@ Transaction.prototype.toObject = Transaction.prototype.toJSON = function toObjec
   var obj = {
     hash: this.hash,
     version: this.version,
+    nTime: this.nTime,
     inputs: inputs,
     outputs: outputs,
     nLockTime: this.nLockTime
@@ -10355,6 +10297,7 @@ Transaction.prototype.fromObject = function fromObject(arg) {
   }
   this.nLockTime = transaction.nLockTime;
   this.version = transaction.version;
+  this.nTime = transaction.nTime;
   this._checkConsistency(arg);
   return this;
 };
@@ -10448,6 +10391,7 @@ Transaction.prototype.fromString = function(string) {
 Transaction.prototype._newTransaction = function() {
   this.version = CURRENT_VERSION;
   this.nLockTime = DEFAULT_NLOCKTIME;
+  this.nTime = Math.round(new Date().getTime() / 1000);
 };
 
 /* Transaction creation interface */
@@ -11096,30 +11040,6 @@ Transaction.prototype.verifySignature = function(sig, pubkey, nin, subscript, si
     sigversion = 0;
   }
 
-  if (sigversion === 1) {
-    var subscriptBuffer = subscript.toBuffer();
-    var scriptCodeWriter = new BufferWriter();
-    scriptCodeWriter.writeVarintNum(subscriptBuffer.length);
-    scriptCodeWriter.write(subscriptBuffer);
-
-    var satoshisBuffer;
-    if (satoshis) {
-      $.checkState(JSUtil.isNaturalNumber(satoshis));
-      satoshisBuffer = new BufferWriter().writeUInt64LEBN(new BN(satoshis)).toBuffer();
-    } else {
-      satoshisBuffer = this.inputs[nin].getSatoshisBuffer();
-    }
-    var verified = SighashWitness.verify(
-      this,
-      sig,
-      pubkey,
-      nin,
-      scriptCodeWriter.toBuffer(),
-      satoshisBuffer
-    );
-    return verified;
-  }
-
   return Sighash.verify(this, sig, pubkey, nin, subscript);
 };
 
@@ -11228,7 +11148,7 @@ Transaction.prototype.enableRBF = function() {
 module.exports = Transaction;
 
 }).call(this,require("buffer").Buffer)
-},{"../address":1,"../crypto/bn":6,"../crypto/hash":8,"../crypto/signature":11,"../encoding/bufferreader":14,"../encoding/bufferwriter":15,"../errors":17,"../privatekey":23,"../script":25,"../util/buffer":43,"../util/js":44,"../util/preconditions":45,"./input":29,"./output":35,"./sighash":36,"./sighashwitness":37,"./unspentoutput":40,"buffer":99,"buffer-compare":97,"lodash":155}],40:[function(require,module,exports){
+},{"../address":1,"../crypto/bn":6,"../crypto/hash":8,"../crypto/signature":11,"../encoding/bufferreader":14,"../encoding/bufferwriter":15,"../errors":17,"../privatekey":23,"../script":25,"../util/buffer":43,"../util/js":44,"../util/preconditions":45,"./input":29,"./output":35,"./sighash":36,"./unspentoutput":40,"buffer":99,"buffer-compare":97,"lodash":155}],40:[function(require,module,exports){
 'use strict';
 
 var _ = require('lodash');
@@ -11683,8 +11603,8 @@ URI.isValid = function(arg, knownParams) {
 URI.parse = function(uri) {
   var info = URL.parse(uri, true);
 
-  if (info.protocol !== 'bitcoin:') {
-    throw new TypeError('Invalid bitcoin URI');
+  if (info.protocol !== 'blackcoin:') {
+    throw new TypeError('Invalid blackcoin URI');
   }
 
   // workaround to host insensitiveness
@@ -11708,7 +11628,7 @@ URI.prototype._fromObject = function(obj) {
   /* jshint maxcomplexity: 10 */
 
   if (!Address.isValid(obj.address)) {
-    throw new TypeError('Invalid bitcoin address');
+    throw new TypeError('Invalid blackcoin address');
   }
 
   this.address = new Address(obj.address);
@@ -11778,7 +11698,7 @@ URI.prototype.toString = function() {
   _.extend(query, this.extras);
 
   return URL.format({
-    protocol: 'bitcoin:',
+    protocol: 'blackcoin:',
     host: this.address,
     query: query
   });
@@ -54374,6 +54294,7 @@ module.exports={
     "buffer-compare": "=1.1.1",
     "elliptic": "=6.4.0",
     "inherits": "=2.0.1",
+    "scryptsy": "=2.0.0",
     "lodash": "=4.17.11"
   },
   "devDependencies": {
@@ -54454,9 +54375,10 @@ bitcore.deps.bs58 = require('bs58');
 bitcore.deps.Buffer = Buffer;
 bitcore.deps.elliptic = require('elliptic');
 bitcore.deps._ = require('lodash');
+bitcore.deps.scrypt = require('scryptsy');
 
 // Internal usage, exposed for testing/advanced tweaking
 bitcore.Transaction.sighash = require('./lib/transaction/sighash');
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./lib/address":1,"./lib/block":4,"./lib/block/blockheader":3,"./lib/block/merkleblock":5,"./lib/crypto/bn":6,"./lib/crypto/ecdsa":7,"./lib/crypto/hash":8,"./lib/crypto/point":9,"./lib/crypto/random":10,"./lib/crypto/signature":11,"./lib/encoding/base58":12,"./lib/encoding/base58check":13,"./lib/encoding/bufferreader":14,"./lib/encoding/bufferwriter":15,"./lib/encoding/varint":16,"./lib/errors":17,"./lib/hdprivatekey.js":19,"./lib/hdpublickey.js":20,"./lib/networks":21,"./lib/opcode":22,"./lib/privatekey":23,"./lib/publickey":24,"./lib/script":25,"./lib/transaction":28,"./lib/transaction/sighash":36,"./lib/unit":41,"./lib/uri":42,"./lib/util/buffer":43,"./lib/util/js":44,"./lib/util/preconditions":45,"./package.json":214,"bn.js":65,"bs58":96,"buffer":99,"elliptic":118,"lodash":155}]},{},[]);
+},{"./lib/address":1,"./lib/block":4,"./lib/block/blockheader":3,"./lib/block/merkleblock":5,"./lib/crypto/bn":6,"./lib/crypto/ecdsa":7,"./lib/crypto/hash":8,"./lib/crypto/point":9,"./lib/crypto/random":10,"./lib/crypto/signature":11,"./lib/encoding/base58":12,"./lib/encoding/base58check":13,"./lib/encoding/bufferreader":14,"./lib/encoding/bufferwriter":15,"./lib/encoding/varint":16,"./lib/errors":17,"./lib/hdprivatekey.js":19,"./lib/hdpublickey.js":20,"./lib/networks":21,"./lib/opcode":22,"./lib/privatekey":23,"./lib/publickey":24,"./lib/script":25,"./lib/transaction":28,"./lib/transaction/sighash":36,"./lib/unit":41,"./lib/uri":42,"./lib/util/buffer":43,"./lib/util/js":44,"./lib/util/preconditions":45,"./package.json":214,"bn.js":65,"bs58":96,"buffer":99,"elliptic":118,"lodash":155,"scryptsy":72}]},{},[]);
